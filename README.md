@@ -52,4 +52,5 @@ To test the device or to retrieve the features supported by the keyboard, it is 
     S: maximum data length. i.e.: the length of the data that can be stored for each button.
     M: maximum macro orders. The maximum number of key combinations for each button.
     
-  
+# EasyEDA
+  https://easyeda.com/cesarsanz.91/macro

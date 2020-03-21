@@ -23,8 +23,10 @@ byte switches[numButtons] = {S1, S2, S3, S4, S5, S6, S7, S8};
 //////////////////////////////////
 ///// Buttons Debounce
 //////////////////////////////////
-unsigned long debounceDelay = 200; // the debounce time in ms; increase if the output flickers
+unsigned long debounceDelay = 125; // the debounce time in ms; increase if the output flickers
+long minimumPressTime = 60; // in ms. increase to reduce phantom presses
 unsigned long lastDebounceTimes[numButtons] = {};
+unsigned long buttonPressedTimes[numButtons] = {};
 bool lastButtonsStates[numButtons] = {};
 
 unsigned long lastSerialTime = 0;
@@ -338,11 +340,21 @@ void loop()
     // Debounce the button
     if ((currentMillis - lastDebounceTimes[i]) > debounceDelay)
     {
-      // Only process rising edges
       bool currentState = digitalRead(switches[i]);
+      // Rissing edge. Save press time
       if (currentState && lastButtonsStates[i] != currentState)
       {
-        sendKeyPress(i);
+        buttonPressedTimes[i] = currentMillis;
+      }
+      // Send the key press if it has been passed more than [minimumPressTime]ms with the button pressed
+      if (currentState && (int)(currentMillis - buttonPressedTimes[i]) > minimumPressTime)
+      {
+        sendKeyPress(i);     
+        buttonPressedTimes[i] = currentMillis + 10000; // Do not resend the order for 10000ms if the key keeps pressed
+      }
+      // Falling edge. Save debounce time
+      if (!currentState && lastButtonsStates[i] != currentState)
+      {
         lastDebounceTimes[i] = currentMillis;
       }
       lastButtonsStates[i] = currentState;

@@ -1,9 +1,18 @@
-#include <Keyboard.h>
 #include <EEPROM.h>
 
 //#define DEBUG
 
-#define VERSION "1.0"
+// Use an international keyboard layout otherwise use the english one
+#define INTERNATIONAL_LAYOUT
+
+#ifdef INTERNATIONAL_LAYOUT
+#include <KeyboardMultiLanguage.h>
+#include "KeyboardMapping.h"
+#else
+#include <Keyboard.h>
+#endif
+
+#define VERSION "1.1"
 
 //////////////////////////////////
 ///// Buttons Configurations v1.0
@@ -24,7 +33,7 @@ byte switches[numButtons] = {S1, S2, S3, S4, S5, S6, S7, S8};
 ///// Buttons Debounce
 //////////////////////////////////
 unsigned long debounceDelay = 125; // the debounce time in ms; increase if the output flickers
-long minimumPressTime = 60; // in ms. increase to reduce phantom presses
+long minimumPressTime = 60;        // in ms. increase to reduce phantom presses
 unsigned long lastDebounceTimes[numButtons] = {};
 unsigned long buttonPressedTimes[numButtons] = {};
 bool lastButtonsStates[numButtons] = {};
@@ -152,12 +161,17 @@ void initSettings()
 
 void setup()
 {
+
   for (int i = 0; i < numButtons; i++)
   {
     pinMode(switches[i], INPUT);
     digitalWrite(switches[i], HIGH);
   }
+#ifdef INTERNATIONAL_LAYOUT
+  Keyboard.language(Language_Layout);
+#else
   Keyboard.begin();
+#endif
 }
 
 bool decodeData(char *data, struct button_settings *decodedSettings)
@@ -349,7 +363,7 @@ void loop()
       // Send the key press if it has been passed more than [minimumPressTime]ms with the button pressed
       if (currentState && (int)(currentMillis - buttonPressedTimes[i]) > minimumPressTime)
       {
-        sendKeyPress(i);     
+        sendKeyPress(i);
         buttonPressedTimes[i] = currentMillis + 10000; // Do not resend the order for 10000ms if the key keeps pressed
       }
       // Falling edge. Save debounce time

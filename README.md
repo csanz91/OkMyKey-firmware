@@ -54,3 +54,6 @@ To test the device or to retrieve the features supported by the keyboard, it is 
     
 # EasyEDA
   https://easyeda.com/cesarsanz.91/macro
+  
+# International Keyboard Layouts
+It is possible to add additional keyboard layouts, to do so you have to change the contents of the file KeyboardMapping.h. In the following repository: https://github.com/MichaelDworkin/KeyboardMultiLanguage/tree/master/KeyboardMapping, there are many examples for different languages. You just have to copy/paste the contents of the R"..." string.

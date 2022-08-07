@@ -27,13 +27,17 @@
 #define S8 A3
 
 const int numButtons = 8;
+const int numPages = 4;
 byte switches[numButtons] = {S1, S2, S3, S4, S5, S6, S7, S8};
+int selectedPage = 0;
+const int numVirtualButtons = numButtons * numPages;
 
 //////////////////////////////////
 ///// Buttons Debounce
 //////////////////////////////////
 unsigned long debounceDelay = 125; // the debounce time in ms; increase if the output flickers
 long minimumPressTime = 60;        // in ms. increase to reduce phantom presses
+long longPressTime = 500;          // in ms
 unsigned long lastDebounceTimes[numButtons] = {};
 unsigned long buttonPressedTimes[numButtons] = {};
 bool lastButtonsStates[numButtons] = {};
@@ -46,18 +50,26 @@ unsigned long lastSerialTime = 0;
 ///// +
 ///// S2 128
 //////////////////////////////////
+
 int address = 0;
-const unsigned int reservedButtonMemory = EEPROM.length() / numButtons;
+const unsigned int reservedButtonMemory = EEPROM.length() / numVirtualButtons;
 int buttonNum = 0;
 
 //////////////////////////////////
 ///// Data decode settings
 //////////////////////////////////
-#define MAX_MACRO_ORDERS 5
-#define MAX_COMMAND_LENGHT 127
+#define MAX_MACRO_ORDERS 3
+#define MAX_COMMAND_LENGHT 64
 #define PRESS_MODE '1'
 #define PRINT_MODE '2'
 #define SEPARATOR "|"
+
+//////////////////////////////////
+///// Send a key every few seconds to keep the OS active
+//////////////////////////////////
+bool keepSystemActive = false;
+const unsigned int sendKeyPeriod = 5000; // ms
+unsigned long lastActiveKeySent = 0;
 
 struct button_settings
 {
@@ -72,7 +84,7 @@ void sendInfo()
 {
   char infoStr[50];
   // Reserve 5 bytes for the header settings (button number, mode and separators)
-  sprintf(infoStr, "Info: %d %s %d %d", numButtons, VERSION, MAX_COMMAND_LENGHT - 5 - MAX_MACRO_ORDERS, MAX_MACRO_ORDERS);
+  sprintf(infoStr, "Info: %d %s %d %d", numVirtualButtons, VERSION, MAX_COMMAND_LENGHT - 5 - MAX_MACRO_ORDERS, MAX_MACRO_ORDERS);
   Serial.println(infoStr);
 }
 
@@ -83,7 +95,8 @@ void sendKeyPress(int key)
 {
   // Retrieve the button settings
   char data[reservedButtonMemory];
-  getButtonConfiguration(key, data);
+  int virtualKey = key + selectedPage * numButtons;
+  getButtonConfiguration(virtualKey, data);
 
   // Decode the button settings
   struct button_settings settings;
@@ -96,7 +109,7 @@ void sendKeyPress(int key)
 #ifdef DEBUG
     Serial.print("Sending command: ");
     char debugString[reservedButtonMemory];
-    sprintf(debugString, "Button: %d, Mode: %c, Command: %x", key, settings.mode, settings.commands[i][0]);
+    sprintf(debugString, "Button: %d, Mode: %c, Command: %x", virtualKey, settings.mode, settings.commands[i][0]);
     Serial.println(debugString);
 #endif
     if (settings.mode == PRESS_MODE)
@@ -106,6 +119,20 @@ void sendKeyPress(int key)
   }
 
   Keyboard.releaseAll();
+}
+
+void changePage(int buttonNumber)
+{
+  if (key == 7)
+  {
+    keepSystemActive = !keepSystemActive;
+    return;
+  }
+
+  if (buttonNumber < 0 or buttonNumber > numPages)
+    return;
+
+  selectedPage = buttonNumber;
 }
 
 void getButtonConfiguration(int buttonNumber, char *data)
@@ -150,10 +177,10 @@ void clearEEPROM()
 void initSettings()
 {
   Serial.println("Init settings...");
-  char buttonKey[1];
-  for (int i = 0; i < numButtons; i++)
+  char buttonKey[7];
+  for (int i = 0; i < numVirtualButtons; i++)
   {
-    sprintf(buttonKey, "%d|%c|%d", i, PRESS_MODE, i + 1);
+    sprintf(buttonKey, "%d|%c|%d", i, PRINT_MODE, i + 1);
     setButtonConfiguration(i, buttonKey);
   }
   Serial.println("Settings initialized.");
@@ -162,7 +189,7 @@ void initSettings()
 void setup()
 {
 
-  for (int i = 0; i < numButtons; i++)
+  for (int i = 0; i < numVirtualButtons; i++)
   {
     pinMode(switches[i], INPUT);
     digitalWrite(switches[i], HIGH);
@@ -194,7 +221,7 @@ bool decodeData(char *data, struct button_settings *decodedSettings)
   Serial.print("Button number: ");
   Serial.println(decodedSettings->buttonNumber);
 #endif
-  if (errCheck == pch || *errCheck != '\0' || decodedSettings->buttonNumber < 0 || decodedSettings->buttonNumber >= numButtons)
+  if (errCheck == pch || *errCheck != '\0' || decodedSettings->buttonNumber < 0 || decodedSettings->buttonNumber >= numVirtualButtons)
     return false;
 
   // Second, decode the push mode
@@ -245,7 +272,7 @@ void sendButtonConfiguration(char *data)
 
   char *errCheck;
   int buttonNumber = (int)strtol(pch, &errCheck, 10); // String to int
-  if (errCheck == pch || *errCheck != '\0' || buttonNumber < 0 || buttonNumber >= numButtons)
+  if (errCheck == pch || *errCheck != '\0' || buttonNumber < 0 || buttonNumber >= numVirtualButtons)
     return;
 
   char buttonSettings[reservedButtonMemory];
@@ -360,15 +387,31 @@ void loop()
       {
         buttonPressedTimes[i] = currentMillis;
       }
-      // Send the key press if it has been passed more than [minimumPressTime]ms with the button pressed
-      if (currentState && (int)(currentMillis - buttonPressedTimes[i]) > minimumPressTime)
+      // Send the key press if it has been passed more than [longPressTime]ms with the button pressed
+      // Long Press
+      if (currentState && (int)(currentMillis - buttonPressedTimes[i]) > longPressTime)
       {
-        sendKeyPress(i);
+#ifdef DEBUG
+        Serial.print("Long Press button: ");
+        Serial.println(i);
+#endif
+        changePage(i);
         buttonPressedTimes[i] = currentMillis + 10000; // Do not resend the order for 10000ms if the key keeps pressed
       }
-      // Falling edge. Save debounce time
+      // Falling edge.
       if (!currentState && lastButtonsStates[i] != currentState)
       {
+        // Short Press
+        if ((int)(currentMillis - buttonPressedTimes[i]) > minimumPressTime)
+        {
+#ifdef DEBUG
+          Serial.print("Short Press button: ");
+          Serial.println(i);
+#endif
+          sendKeyPress(i);
+          buttonPressedTimes[i] = currentMillis + 10000; // Do not resend the order for 10000ms if the key keeps pressed
+        }
+
         lastDebounceTimes[i] = currentMillis;
       }
       lastButtonsStates[i] = currentState;
@@ -376,4 +419,12 @@ void loop()
   }
 
   recvData();
+
+  // Keep system active
+  if (keepSystemActive && currentMillis - lastActiveKeySent > sendKeyPeriod)
+  {
+    Keyboard.press(KEY_LEFT_CTRL);
+    Keyboard.releaseAll();
+    lastActiveKeySent = currentMillis;
+  }
 }

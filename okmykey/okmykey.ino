@@ -123,7 +123,7 @@ void sendKeyPress(int key)
 
 void changePage(int buttonNumber)
 {
-  if (key == 7)
+  if (buttonNumber == 7)
   {
     keepSystemActive = !keepSystemActive;
     return;

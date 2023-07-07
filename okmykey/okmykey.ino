@@ -1,7 +1,7 @@
 #include <EEPROM.h>
 #include <Adafruit_NeoPixel.h>
 
-//#define DEBUG
+// #define DEBUG
 
 //////////////////////////////////
 ///// LEDs configuration
@@ -14,7 +14,7 @@ Adafruit_NeoPixel pixels(NUMPIXELS, PIN, NEO_GRB + NEO_KHZ800);
 #define INTERNATIONAL_LAYOUT
 
 #ifdef INTERNATIONAL_LAYOUT
-#include <KeyboardMultiLanguage.h>
+#include <KeyboardMultiLanguage.h> // https://github.com/MichaelDworkin/KeyboardMultiLanguage.git
 #include "KeyboardMapping.h"
 #else
 #include <Keyboard.h>
@@ -50,7 +50,18 @@ unsigned long lastDebounceTimes[numButtons] = {};
 unsigned long buttonPressedTimes[numButtons] = {};
 bool lastButtonsStates[numButtons] = {};
 
-unsigned long lastSerialTime = 0;
+const int code_size = 2;
+const int code_address = 0;
+bool unlocked = false;
+byte code_index = 0;
+int entered_code = 0;
+const int code_length = 4;
+bool wrong_code = false;
+unsigned long last_flashing_time = 0;
+const unsigned long flashing_period = 200;
+unsigned long last_flashing_wrong_code_time = 0;
+const unsigned long flashing_wrong_code_period = 2000;
+bool flashing_state = false;
 
 //////////////////////////////////
 ///// EEPROM Configuration
@@ -60,14 +71,14 @@ unsigned long lastSerialTime = 0;
 //////////////////////////////////
 
 int address = 0;
-const unsigned int reservedButtonMemory = EEPROM.length() / numVirtualButtons;
+const unsigned int reservedButtonMemory = EEPROM.length() / numVirtualButtons - code_size;
 int buttonNum = 0;
 
 //////////////////////////////////
 ///// Data decode settings
 //////////////////////////////////
 #define MAX_MACRO_ORDERS 3
-#define MAX_COMMAND_LENGHT 64
+#define MAX_COMMAND_LENGTH 64
 #define PRESS_MODE '1'
 #define PRINT_MODE '2'
 #define SEPARATOR "|"
@@ -81,10 +92,10 @@ unsigned long lastActiveKeySent = 0;
 
 struct button_settings
 {
-  char raw[MAX_COMMAND_LENGHT * MAX_MACRO_ORDERS + 10];
+  char raw[MAX_COMMAND_LENGTH * MAX_MACRO_ORDERS + 10];
   unsigned int buttonNumber;
   char mode;
-  char commands[MAX_MACRO_ORDERS][MAX_COMMAND_LENGHT];
+  char commands[MAX_MACRO_ORDERS][MAX_COMMAND_LENGTH];
   unsigned int commandsNum;
 };
 
@@ -92,7 +103,7 @@ void sendInfo()
 {
   char infoStr[50];
   // Reserve 5 bytes for the header settings (button number, mode and separators)
-  sprintf(infoStr, "Info: %d %s %d %d", numVirtualButtons, VERSION, MAX_COMMAND_LENGHT - 5 - MAX_MACRO_ORDERS, MAX_MACRO_ORDERS);
+  sprintf(infoStr, "Info: %d %s %d %d", numVirtualButtons, VERSION, MAX_COMMAND_LENGTH - 5 - MAX_MACRO_ORDERS, MAX_MACRO_ORDERS);
   Serial.println(infoStr);
 }
 
@@ -146,29 +157,55 @@ void changePage(int buttonNumber)
 void getButtonConfiguration(int buttonNumber, char *data)
 {
   // Start address pointer
-  unsigned int addressPointer = buttonNumber * reservedButtonMemory;
+  unsigned int addressPointer = buttonNumber * reservedButtonMemory + code_size;
 
   // Read the string
   unsigned char readChar;
-  const unsigned char dataLenght = EEPROM.read(addressPointer++);
-  for (unsigned int len = 0; len < dataLenght; len++)
+  const unsigned char dataLength = EEPROM.read(addressPointer++);
+  for (unsigned int len = 0; len < dataLength; len++)
   {
     readChar = EEPROM.read(addressPointer + len);
     data[len] = readChar;
   }
-  data[dataLenght] = '\0';
+  data[dataLength] = '\0';
 }
 
 void setButtonConfiguration(int buttonNumber, const char *data)
 {
   // Start address pointer
-  unsigned int addressPointer = buttonNumber * reservedButtonMemory;
+  unsigned int addressPointer = buttonNumber * reservedButtonMemory + code_size;
 
-  unsigned int dataLenght = strlen(data);
-  EEPROM.write(addressPointer++, dataLenght);
-  for (int addrPos = 0; addrPos < dataLenght; addrPos++)
+  unsigned int dataLength = strlen(data);
+  EEPROM.write(addressPointer++, dataLength);
+  for (int addrPos = 0; addrPos < dataLength; addrPos++)
   {
     EEPROM.write(addressPointer + addrPos, data[addrPos]);
+  }
+}
+
+bool validateCode(const char *code)
+{
+  if (strlen(code) != 4)
+  {
+    return false; // Code length is not 4
+  }
+
+  for (int i = 0; i < 4; i++)
+  {
+    if (code[i] < '1' || code[i] > '8')
+    {
+      return false; // Digit is outside the valid range
+    }
+  }
+
+  return true; // Code is valid
+}
+
+void setCode(const char *code)
+{
+  if (validateCode(code))
+  {
+    writeCodeToEEPROM(atoi(code));
   }
 }
 
@@ -191,6 +228,8 @@ void initSettings()
     sprintf(buttonKey, "%d|%c|%d", i, PRINT_MODE, i + 1);
     setButtonConfiguration(i, buttonKey);
   }
+
+  writeCodeToEEPROM(1735);
   Serial.println("Settings initialized.");
 }
 
@@ -210,6 +249,11 @@ void setup()
 #else
   Keyboard.begin();
 #endif
+  int code = readCodeFromEEPROM();
+  Serial.print("Setup code: ");
+  Serial.println(code);
+
+  unlocked = code == 0;
 }
 
 bool decodeData(char *data, struct button_settings *decodedSettings)
@@ -253,12 +297,12 @@ bool decodeData(char *data, struct button_settings *decodedSettings)
   pch = strtok(NULL, SEPARATOR);
   while (pch != NULL && commandsNum < MAX_MACRO_ORDERS)
   {
-    unsigned int commandLenght = strlen(pch);
+    unsigned int commandLength = strlen(pch);
 #ifdef DEBUG
     Serial.print("Command: ");
     Serial.println(pch);
 #endif
-    if (commandLenght > MAX_COMMAND_LENGHT)
+    if (commandLength > MAX_COMMAND_LENGTH)
       return false;
     strcpy(decodedSettings->commands[commandsNum++], pch);
     pch = strtok(NULL, SEPARATOR);
@@ -267,6 +311,25 @@ bool decodeData(char *data, struct button_settings *decodedSettings)
   decodedSettings->commandsNum = commandsNum;
 
   return commandsNum > 0;
+}
+
+void writeCodeToEEPROM(int code)
+{
+  byte lowByte = lowByte(code);   // Extract the low byte
+  byte highByte = highByte(code); // Extract the high byte
+
+  EEPROM.write(code_address, lowByte);      // Write the low byte to EEPROM
+  EEPROM.write(code_address + 1, highByte); // Write the high byte to EEPROM
+}
+
+int readCodeFromEEPROM()
+{
+  byte lowByte = EEPROM.read(code_address);      // Read the low byte from EEPROM
+  byte highByte = EEPROM.read(code_address + 1); // Read the high byte from EEPROM
+
+  int code = highByte << 8 | lowByte; // Combine the bytes into a 16-bit integer
+
+  return code;
 }
 
 void sendButtonConfiguration(char *data)
@@ -373,6 +436,10 @@ void recvData()
     {
       sendInfo();
     }
+    else if (strstr(receivedChars, "setCode ") != NULL)
+    {
+      setCode(receivedChars);
+    }
     else
     {
       struct button_settings decodedData;
@@ -384,18 +451,18 @@ void recvData()
   }
 }
 
+int powerOf10(int exponent)
+{
+  int result = 1;
+  for (int i = 0; i < exponent; i++)
+  {
+    result *= 10;
+  }
+  return result;
+}
+
 void loop()
 {
-  // LEDs loop
-  pixels.clear(); // Set all pixel colors to 'off'
-  uint32_t color = pixels.Color(50, 150, 20);
-  if (keepSystemActive)
-  {
-    color = pixels.Color(150, 20, 0);
-  }
-  pixels.setPixelColor(selectedPage, color);
-  pixels.show();
-
   // Keyboard loop
   unsigned long currentMillis = millis();
   for (int i = 0; i < numButtons; i++)
@@ -404,14 +471,14 @@ void loop()
     if ((currentMillis - lastDebounceTimes[i]) > debounceDelay)
     {
       bool currentState = digitalRead(switches[i]);
-      // Rissing edge. Save press time
+      // Rising edge. Save press time
       if (currentState && lastButtonsStates[i] != currentState)
       {
         buttonPressedTimes[i] = currentMillis;
       }
       // Send the key press if it has been passed more than [longPressTime]ms with the button pressed
       // Long Press
-      if (currentState && (int)(currentMillis - buttonPressedTimes[i]) > longPressTime)
+      if (unlocked && currentState && (int)(currentMillis - buttonPressedTimes[i]) > longPressTime)
       {
 #ifdef DEBUG
         Serial.print("Long Press button: ");
@@ -430,7 +497,41 @@ void loop()
           Serial.print("Short Press button: ");
           Serial.println(i);
 #endif
-          sendKeyPress(i);
+          if (unlocked)
+          {
+            sendKeyPress(i);
+          }
+          else
+          {
+            entered_code += powerOf10(code_length - 1 - code_index) * (i + 1);
+#ifdef DEBUG
+            Serial.print("entered_code: ");
+            Serial.println(entered_code);
+#endif
+            code_index++;
+            if (code_index >= code_length)
+            {
+              code_index = 0;
+              int saved_code = readCodeFromEEPROM();
+              if (entered_code == saved_code)
+              {
+                unlocked = true;
+                wrong_code = false;
+              }
+              else
+              {
+                wrong_code = true;
+                last_flashing_wrong_code_time = currentMillis;
+              }
+#ifdef DEBUG
+              Serial.print("Verifying code: ");
+              Serial.println(saved_code);
+              Serial.print("Unlocked: ");
+              Serial.println(unlocked);
+#endif
+              entered_code = 0;
+            }
+          }
           buttonPressedTimes[i] = currentMillis + 10000; // Do not resend the order for 10000ms if the key keeps pressed
         }
 
@@ -449,4 +550,51 @@ void loop()
     Keyboard.releaseAll();
     lastActiveKeySent = currentMillis;
   }
+
+  // LEDs loop
+  pixels.clear(); // Set all pixel colors to 'off'
+  uint32_t color = pixels.Color(50, 150, 20);
+  if (unlocked)
+  {
+    if (keepSystemActive)
+    {
+      color = pixels.Color(150, 20, 0);
+    }
+    pixels.setPixelColor(selectedPage, color);
+  }
+  // LED lights for code indication
+  else
+  {
+    // Change the flashing state
+    if ((currentMillis - last_flashing_time) > flashing_period)
+    {
+      flashing_state = !flashing_state;
+      last_flashing_time = currentMillis;
+    }
+
+    // Stop the wrong code flashing after some time
+    if ((currentMillis - last_flashing_wrong_code_time) > flashing_wrong_code_period)
+    {
+      wrong_code = false;
+    }
+
+    if (flashing_state)
+    {
+      // Flash all the lights if the code is wrong
+      if (wrong_code)
+      {
+        // Set the state of all the lights
+        for (int i = 0; i < code_length; i++)
+        {
+          pixels.setPixelColor(i, color);
+        }
+      }
+      // Flash the current digit index
+      else
+      {
+        pixels.setPixelColor(code_index, color);
+      }
+    }
+  }
+  pixels.show();
 }

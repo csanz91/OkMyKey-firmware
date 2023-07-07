@@ -1,6 +1,14 @@
 #include <EEPROM.h>
+#include <Adafruit_NeoPixel.h>
 
 //#define DEBUG
+
+//////////////////////////////////
+///// LEDs configuration
+//////////////////////////////////
+#define PIN 6
+#define NUMPIXELS 4
+Adafruit_NeoPixel pixels(NUMPIXELS, PIN, NEO_GRB + NEO_KHZ800);
 
 // Use an international keyboard layout otherwise use the english one
 #define INTERNATIONAL_LAYOUT
@@ -188,6 +196,9 @@ void initSettings()
 
 void setup()
 {
+  // Setup LEDs
+  pixels.begin();
+  pixels.setBrightness(100);
 
   for (int i = 0; i < numVirtualButtons; i++)
   {
@@ -375,6 +386,17 @@ void recvData()
 
 void loop()
 {
+  // LEDs loop
+  pixels.clear(); // Set all pixel colors to 'off'
+  uint32_t color = pixels.Color(50, 150, 20);
+  if (keepSystemActive)
+  {
+    color = pixels.Color(150, 20, 0);
+  }
+  pixels.setPixelColor(selectedPage, color);
+  pixels.show();
+
+  // Keyboard loop
   unsigned long currentMillis = millis();
   for (int i = 0; i < numButtons; i++)
   {
